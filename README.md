@@ -119,29 +119,40 @@ go get github.com/k0ssk0ss-ai/netprobe/pkg/engine
 package main
 
 import (
+    "context"
     "fmt"
+    "time"
     "github.com/k0ssk0ss-ai/netprobe/pkg/engine"
 )
 
 func main() {
-    // 1. Получаем живой "чистый" IP-адрес для тестов
-    cleanIP := engine.GetCleanIP()
+    // 1. Создаем контекст с жестким таймаутом (защита для мобильных ОС)
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
 
-    // 2. Запускаем параллельную диагностику
-    transportRes := engine.CheckTransport(cleanIP)
-    dpiRes := engine.CheckDPI(cleanIP, "twitter.com")
-    dnsRes := engine.CheckDNS("twitter.com")
+    // 2. Получаем живой "чистый" IP-адрес для тестов
+    cleanIP := engine.GetCleanIP(ctx)
 
-    // 3. Принимаем решение о выборе VPN-протокола
-    if transportRes.UDP443Works {
-        fmt.Println("QUIC открыт! Идеально для Hysteria2.")
-    } else if dpiRes.SNIBlocked {
-        fmt.Println("Обнаружен DPI! Переключаемся на VLESS+Reality.")
+    // 3. Запускаем параллельную диагностику
+    transportRes := engine.CheckTransport(ctx, cleanIP)
+    dpiRes := engine.CheckDPI(ctx, cleanIP, "twitter.com")
+    dnsRes := engine.CheckDNS(ctx, "twitter.com")
+
+    // 4. Принимаем решение о выборе VPN-протокола с учетом QoS
+    if transportRes.UDP443Works && transportRes.UDPRTTMs < 100 {
+        fmt.Println("QUIC открыт, пинг отличный! Идеально для Hysteria2.")
+    } else if dpiRes.SNIBlocked || dpiRes.LikelyDPIInjected {
+        fmt.Println("Обнаружен активный DPI (Сброс по SNI)! Переключаемся на VLESS+Reality.")
+    } else if transportRes.TCPJitterMs > 50 {
+        fmt.Println("Канал нестабилен (высокий Jitter). Рекомендуем TCP (OpenVPN/VLESS).")
     } else {
-        fmt.Println("Сеть чистая. Можно использовать WireGuard.")
+        fmt.Println("Сеть чистая и стабильная. Можно использовать WireGuard.")
     }
 }
 ```
+
+### 📱 Интеграция с Gomobile (Android / iOS)
+Для мобильных разработчиков предусмотрена специальная безопасная функция `RunScanJSON(target string) string`, которая гарантированно не утекает по памяти, не оставляет открытых горутин (благодаря `context.Context`) и отдает чистую строку JSON для легкого парсинга в Swift / Kotlin/Java.
 
 ### 💻 Режим CLI и Демона
 

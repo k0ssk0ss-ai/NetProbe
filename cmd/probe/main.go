@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -10,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/antigravity/netprobe/pkg/engine"
+	"github.com/k0ssk0ss-ai/netprobe/pkg/engine"
 )
 
 func main() {
@@ -29,7 +30,7 @@ func main() {
 
 // EN: runEngineScans executes all network checks concurrently using goroutines
 // RU: runEngineScans выполняет все сетевые проверки параллельно (горутины)
-func runEngineScans(target string) engine.ProbeReport {
+func runEngineScans(ctx context.Context, target string) engine.ProbeReport {
 	report := engine.ProbeReport{
 		Timestamp:  time.Now(),
 		TargetHost: target,
@@ -44,23 +45,23 @@ func runEngineScans(target string) engine.ProbeReport {
 
 	// EN: Resolve a trusted clean IP first to avoid false positives
 	// RU: Получаем чистый IP перед стартом
-	cleanIP := engine.GetCleanIP()
+	cleanIP := engine.GetCleanIP(ctx)
 
 	// EN: Run 3 independent scanners in parallel
 	// RU: Запускаем 3 независимых сканера параллельно
 	go func() {
 		defer wg.Done()
-		transportRes = engine.CheckTransport(cleanIP)
+		transportRes = engine.CheckTransport(ctx, cleanIP)
 	}()
 
 	go func() {
 		defer wg.Done()
-		dpiRes = engine.CheckDPI(cleanIP, target)
+		dpiRes = engine.CheckDPI(ctx, cleanIP, target)
 	}()
 
 	go func() {
 		defer wg.Done()
-		dnsRes = engine.CheckDNS(target)
+		dnsRes = engine.CheckDNS(ctx, target)
 	}()
 
 	// EN: Wait for the longest test to complete (max 3 seconds)
@@ -80,8 +81,27 @@ func runEngineScans(target string) engine.ProbeReport {
 
 // EN: runCLI is the mode for scripts and parsers. It outputs pure JSON to stdout.
 // RU: runCLI — режим для парсеров и программистов. Выводит чистый JSON.
+// EN: RunScanJSON is the main entry point for Gomobile (Android/iOS)
+// RU: RunScanJSON - главная точка входа для мобильных клиентов
+// go:export RunScanJSON
+func RunScanJSON(target string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	report := runEngineScans(ctx, target)
+	b, err := json.Marshal(report)
+	if err != nil {
+		return `{"error": "serialization failed"}`
+	}
+	return string(b)
+}
+
 func runCLI(target string) {
-	report := runEngineScans(target)
+	fmt.Printf("Starting NetProbe analysis for target: %s\n", target)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report := runEngineScans(ctx, target)
 
 	jsonBytes, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
@@ -102,6 +122,12 @@ func runDaemon() {
 	http.Handle("/", http.FileServer(http.Dir("./web")))
 
 	http.HandleFunc("/api/scan", func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error": "Internal server error: %v"}`, err), http.StatusInternalServerError)
+			}
+		}()
+
 		target := r.URL.Query().Get("target")
 		if target == "" {
 			target = "twitter.com"
@@ -111,7 +137,9 @@ func runDaemon() {
 
 		// EN: Launch the concurrent scanner
 		// RU: Запускаем параллельный сканер
-		report := runEngineScans(target)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		report := runEngineScans(ctx, target)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(report)
