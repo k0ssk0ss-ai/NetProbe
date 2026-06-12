@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NetProbe Dashboard</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: #ffffff;
+            color: #333333;
+            margin: 0;
+            padding: 40px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+        }
+
+        h1 {
+            font-size: 24px;
+            margin: 0 0 5px 0;
+            font-weight: 600;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+
+        .control-panel {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #eee;
+        }
+
+        input {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 16px;
+            outline: none;
+        }
+
+        input:focus {
+            border-color: #0066cc;
+        }
+
+        button {
+            background: #0066cc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0052a3;
+        }
+
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+
+        .stages {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+
+        .stage-column {
+            border-right: 1px solid #eee;
+            padding-right: 30px;
+        }
+
+        .stage-column:last-child {
+            border-right: none;
+            padding-right: 0;
+        }
+
+        .stage-title {
+            font-weight: 600;
+            margin-bottom: 15px;
+            font-size: 16px;
+            border-bottom: 2px solid #333;
+            padding-bottom: 5px;
+            display: inline-block;
+        }
+
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+
+        .status {
+            font-weight: 500;
+        }
+
+        .status.ok { color: #059669; }
+        .status.error { color: #dc2626; }
+        .status.waiting { color: #9ca3af; }
+
+        .summary {
+            background: #f9f9f9;
+            border: 1px solid #eee;
+            padding: 20px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 13px;
+            white-space: pre-wrap;
+            color: #444;
+            min-height: 100px;
+            line-height: 1.5;
+        }
+
+        .summary-title {
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-size: 16px;
+        }
+
+        @media (max-width: 768px) {
+            .stages {
+                grid-template-columns: 1fr;
+            }
+            .stage-column {
+                border-right: none;
+                padding-right: 0;
+                border-bottom: 1px solid #eee;
+                padding-bottom: 20px;
+            }
+            .stage-column:last-child {
+                border-bottom: none;
+                padding-bottom: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <h1>NetProbe</h1>
+        <div class="subtitle">Minimalist Connection Analyzer</div>
+
+        <div class="control-panel">
+            <input type="text" id="target" value="twitter.com" placeholder="Введите домен...">
+            <button id="scanBtn">Запустить тест</button>
+        </div>
+
+        <div class="stages">
+            <!-- Stage 1 -->
+            <div class="stage-column">
+                <div class="stage-title">1. Транспорт</div>
+                <div class="metric">
+                    <span>TCP (443)</span>
+                    <span id="res-tcp" class="status waiting">—</span>
+                </div>
+                <div class="metric">
+                    <span>UDP (53)</span>
+                    <span id="res-udp" class="status waiting">—</span>
+                </div>
+                <div class="metric">
+                    <span>QUIC (443)</span>
+                    <span id="res-quic" class="status waiting">—</span>
+                </div>
+            </div>
+
+            <!-- Stage 2 -->
+            <div class="stage-column">
+                <div class="stage-title">2. DNS слой</div>
+                <div class="metric">
+                    <span>DoH запрос</span>
+                    <span id="res-doh" class="status waiting">—</span>
+                </div>
+                <div class="metric">
+                    <span>Spoofing</span>
+                    <span id="res-spoofing" class="status waiting">—</span>
+                </div>
+                <div class="metric">
+                    <span>TLS Cert</span>
+                    <span id="res-tls" class="status waiting">—</span>
+                </div>
+            </div>
+
+            <!-- Stage 3 -->
+            <div class="stage-column">
+                <div class="stage-title">3. Анализ DPI</div>
+                <div class="metric">
+                    <span>SNI (TLS/HTTPS)</span>
+                    <span id="res-sni" class="status waiting">—</span>
+                </div>
+                <div class="metric">
+                    <span>HTTP Host (Port 80)</span>
+                    <span id="res-http" class="status waiting">—</span>
+                </div>
+            </div>
+        </div>
+
+        <div>
+            <div class="summary-title">Отчет-итог:</div>
+            <div class="summary" id="res-msg">Ожидание запуска...</div>
+        </div>
+    </div>
+
+    <script>
+        const btn = document.getElementById('scanBtn');
+        const summary = document.getElementById('res-msg');
+
+        function setStatus(id, isOk, text) {
+            const el = document.getElementById(id);
+            el.textContent = text;
+            el.className = 'status ' + (isOk ? 'ok' : 'error');
+        }
+
+        function resetStatus(id) {
+            const el = document.getElementById(id);
+            el.textContent = '...';
+            el.className = 'status waiting';
+        }
+
+        btn.addEventListener('click', async () => {
+            const target = document.getElementById('target').value || 'twitter.com';
+            
+            btn.disabled = true;
+            btn.textContent = 'Анализ...';
+            summary.textContent = 'Подключение к локальному демону...';
+
+            ['res-tcp','res-udp','res-quic','res-doh','res-spoofing','res-tls','res-sni','res-http'].forEach(resetStatus);
+
+            try {
+                const res = await fetch(`/api/scan?target=${encodeURIComponent(target)}`);
+                const data = await res.json();
+                const r = data.results;
+
+                // 1. Транспорт
+                setStatus('res-tcp', r.transport.tcp_443_open, r.transport.tcp_443_open ? 'Открыт' : 'Блок');
+                setStatus('res-udp', r.transport.udp_53_works, r.transport.udp_53_works ? 'Открыт' : 'Блок');
+                setStatus('res-quic', r.transport.udp_443_works, r.transport.udp_443_works ? 'Открыт' : 'Блок');
+
+                // 2. DNS
+                setStatus('res-doh', r.dns.doh_success, r.dns.doh_success ? 'ОК' : 'Ошибка');
+                setStatus('res-spoofing', !r.dns.spoofing_detected, r.dns.spoofing_detected ? 'Подмена' : 'Чисто');
+                setStatus('res-tls', r.dns.tls_cert_valid, r.dns.tls_cert_valid ? 'Валиден' : 'Фейк');
+
+                // 3. DPI
+                setStatus('res-sni', !r.dpi.sni_blocked, r.dpi.sni_blocked ? 'БЛОК' : 'Пропуск');
+                setStatus('res-http', !r.dpi.http_blocked, r.dpi.http_blocked ? 'БЛОК' : 'Пропуск');
+
+                // Итог
+                let logMsg = `Цель: ${data.target_host}\nВремя: ${data.timestamp}\n`;
+                if(r.dpi.block_method) logMsg += `\nМетод блокировки DPI: ${r.dpi.block_method}`;
+                if(r.dpi.errors && r.dpi.errors.length > 0) logMsg += `\nЛог DPI: ${r.dpi.errors.join(" | ")}`;
+                if(r.dns.errors && r.dns.errors.length > 0) logMsg += `\nЛог DNS: ${r.dns.errors.join(" | ")}`;
+                if(r.transport.errors && r.transport.errors.length > 0) logMsg += `\nЛог Транспорта: ${r.transport.errors.join(" | ")}`;
+                
+                logMsg += `\n\n=== РЕКОМЕНДАЦИИ И ВЕРДИКТ ===\n`;
+                if (data.recommendations && data.recommendations.length > 0) {
+                    data.recommendations.forEach(rec => {
+                        logMsg += `• ${rec}\n`;
+                    });
+                } else {
+                    logMsg += `• Данных недостаточно для рекомендаций.\n`;
+                }
+
+                summary.textContent = logMsg.trim();
+
+            } catch(e) {
+                summary.textContent = "КРИТИЧЕСКАЯ ОШИБКА: Нет связи с локальным процессом NetProbe (daemon). Убедитесь, что он запущен.";
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Запустить тест';
+            }
+        });
+    </script>
+</body>
+</html>
