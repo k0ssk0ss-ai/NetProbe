@@ -1,17 +1,16 @@
 package engine
 
 import (
+	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
-	"time"
 
 	"github.com/miekg/dns"
 )
 
 // EN: CheckDNS tests for DNS spoofing and IP blocking.
 // RU: CheckDNS проверяет наличие DNS-спуфинга и блокировки по IP.
-func CheckDNS(targetHost string) DNSResult {
+func CheckDNS(ctx context.Context, targetHost string) DNSResult {
 	result := DNSResult{
 		ResolvedIPs:      []string{},
 		DoHSuccess:       false,
@@ -25,7 +24,6 @@ func CheckDNS(targetHost string) DNSResult {
 	// EN: We send the query to 8.8.8.8. ISPs with DPI often intercept port 53 (Transparent DNS Proxy).
 	// RU: Отправляем на 8.8.8.8. Провайдеры с DPI часто перехватывают 53 порт.
 	c := new(dns.Client)
-	c.Timeout = 3 * time.Second
 	m := new(dns.Msg)
 	m.SetQuestion(dns.Fqdn(targetHost), dns.TypeA)
 	
@@ -37,13 +35,14 @@ func CheckDNS(targetHost string) DNSResult {
 			}
 		}
 	} else {
-		// EN: Fallback to OS resolver if port 53 is completely blocked
-		// RU: Фолбэк на системный резолвер, если 53 порт заблокирован намертво
-		ips, err := net.LookupHost(targetHost)
+		// EN: Fallback to DoH directly if port 53 is blocked (never use net.LookupHost in mobile VPNs)
+		// RU: Фолбэк на DoH, так как системный net.LookupHost на Android/iOS вызовет луп.
+		ips, err := GetTrustedDoH(ctx, targetHost)
 		if err == nil && len(ips) > 0 {
 			result.ResolvedIPs = ips
+			result.DoHSuccess = true
 		} else {
-			result.Errors = append(result.Errors, "DNS Error: "+err.Error())
+			result.Errors = append(result.Errors, "DNS Error: all resolvers failed")
 			return result
 		}
 	}
@@ -53,50 +52,52 @@ func CheckDNS(targetHost string) DNSResult {
 		return result
 	}
 
-	// EN: 2. Query via trusted DoH
-	// RU: 2. Запрос через надежный DoH пул
-	trustedIPs, err := GetTrustedDoH(targetHost)
-	if err == nil && len(trustedIPs) > 0 {
-		result.DoHSuccess = true
-		matchFound := false
-		for _, sysIP := range result.ResolvedIPs {
-			for _, trustIP := range trustedIPs {
-				if sysIP == trustIP {
-					matchFound = true
-					break
+	// EN: Verify against DoH only if we haven't already fallen back to it
+	// RU: Проверяем через DoH, только если мы еще не переключились на него
+	if !result.DoHSuccess {
+		dohIPs, err := GetTrustedDoH(ctx, targetHost)
+		if err == nil && len(dohIPs) > 0 {
+			result.DoHSuccess = true
+			matchFound := false
+			for _, sysIP := range result.ResolvedIPs {
+				for _, trustIP := range dohIPs {
+					if sysIP == trustIP {
+						matchFound = true
+						break
+					}
 				}
 			}
-		}
-		if !matchFound {
-			result.Errors = append(result.Errors, "[Warning] System IP does not match DoH IP (Possible spoofing)")
+			if !matchFound {
+				result.SpoofingDetected = true
+				result.Errors = append(result.Errors, "[Warning] System IP does not match DoH IP. Possible DNS spoofing.")
+			}
 		}
 	}
 
-	// EN: 3. Verify TLS certificate validity on the resolved IP
-	// RU: 3. Проверка валидности TLS-сертификата по выданному IP
+	// EN: 3. Verify TLS certificate.
+	// RU: 3. Проверяем TLS сертификат.
 	// EN: This is the ultimate proof that the IP belongs to the target domain, not an ISP block page.
 	// RU: Это 100% способ убедиться, что IP настоящий, а не провайдерская заглушка.
 	targetIP := result.ResolvedIPs[0]
-	certValid, tlsErr := verifyTLS(targetIP, targetHost)
+	certValid, tlsErr := verifyTLS(ctx, targetIP, targetHost)
 	
 	result.TLSCertValid = certValid
 	
-	if !certValid {
+	if tlsErr != nil {
+		result.Errors = append(result.Errors, "TLS Cert Error: "+tlsErr.Error())
 		result.SpoofingDetected = true
-		result.Errors = append(result.Errors, "Certificate Error (Spoofed IP): "+tlsErr.Error())
 	}
 
 	return result
 }
 
-
-
 // EN: verifyTLS establishes a connection and verifies the certificate
 // RU: verifyTLS устанавливает соединение и проверяет сертификат
-func verifyTLS(ip, hostname string) (bool, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "443"), 3*time.Second)
+func verifyTLS(ctx context.Context, ip string, hostname string) (bool, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip, "443"))
 	if err != nil {
-		return false, fmt.Errorf("connection timeout/error: %v", err)
+		return false, err
 	}
 	defer conn.Close()
 
@@ -104,11 +105,15 @@ func verifyTLS(ip, hostname string) (bool, error) {
 		ServerName: hostname, // EN: Ensure server provides valid certificate for the target domain
 	}
 	tlsConn := tls.Client(conn, config)
-	tlsConn.SetDeadline(time.Now().Add(3 * time.Second))
+	defer tlsConn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		tlsConn.SetDeadline(deadline)
+	}
 	
 	err = tlsConn.Handshake()
 	if err != nil {
 		return false, err
 	}
+
 	return true, nil
 }

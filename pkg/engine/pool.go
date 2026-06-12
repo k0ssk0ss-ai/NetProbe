@@ -1,11 +1,11 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
-	"time"
 )
 
 // EN: CleanIPPool contains trusted public IPs that shouldn't be blocked by default.
@@ -27,12 +27,13 @@ var DoHPool = []string{
 
 // EN: GetCleanIP finds the first reachable clean IP to avoid false positives if Cloudflare is blocked.
 // RU: GetCleanIP находит первый доступный IP из пула, чтобы избежать ложных срабатываний при блоке 1.1.1.1.
-func GetCleanIP() string {
+func GetCleanIP(ctx context.Context) string {
 	ipChan := make(chan string, len(CleanIPPool))
 
 	for _, ip := range CleanIPPool {
 		go func(targetIP string) {
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(targetIP, "443"), 500*time.Millisecond)
+			var dialer net.Dialer
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(targetIP, "443"))
 			if err == nil {
 				conn.Close()
 				ipChan <- targetIP
@@ -43,51 +44,57 @@ func GetCleanIP() string {
 	select {
 	case activeIP := <-ipChan:
 		return activeIP
-	case <-time.After(550 * time.Millisecond):
+	case <-ctx.Done():
 		return "1.1.1.1"
 	}
 }
 
 // EN: GetTrustedDoH requests IP via multiple DoH providers to bypass blockings.
 // RU: GetTrustedDoH запрашивает IP через пул DoH серверов.
-func GetTrustedDoH(domain string) ([]string, error) {
-	client := &http.Client{Timeout: 3 * time.Second}
+func GetTrustedDoH(ctx context.Context, domain string) ([]string, error) {
+	resultChan := make(chan []string, len(DoHPool))
 
-	for _, providerUrl := range DoHPool {
-		url := fmt.Sprintf("%s?name=%s&type=A", providerUrl, domain)
-		req, _ := http.NewRequest("GET", url, nil)
-		req.Header.Set("Accept", "application/dns-json")
+	for _, url := range DoHPool {
+		go func(providerUrl string) {
+			client := &http.Client{}
+			fullUrl := fmt.Sprintf("%s?name=%s&type=A", providerUrl, domain)
+			req, _ := http.NewRequestWithContext(ctx, "GET", fullUrl, nil)
+			req.Header.Set("Accept", "application/dns-json")
 
-		resp, err := client.Do(req)
-		if err != nil {
-			continue // Try next DoH provider
-		}
-		
-		var data struct {
-			Answer []struct {
-				Type int    `json:"type"`
-				Data string `json:"data"`
-			} `json:"Answer"`
-		}
-
-		err = json.NewDecoder(resp.Body).Decode(&data)
-		resp.Body.Close()
-		
-		if err != nil {
-			continue
-		}
-
-		var ips []string
-		for _, ans := range data.Answer {
-			if ans.Type == 1 { // A record
-				ips = append(ips, ans.Data)
+			resp, err := client.Do(req)
+			if err != nil {
+				return
 			}
-		}
-		
-		if len(ips) > 0 {
-			return ips, nil
-		}
+			defer resp.Body.Close()
+
+			var data struct {
+				Answer []struct {
+					Type int    `json:"type"`
+					Data string `json:"data"`
+				} `json:"Answer"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+				return
+			}
+
+			var ips []string
+			for _, ans := range data.Answer {
+				if ans.Type == 1 {
+					ips = append(ips, ans.Data)
+				}
+			}
+
+			if len(ips) > 0 {
+				resultChan <- ips
+			}
+		}(url)
 	}
 
-	return nil, fmt.Errorf("all DoH providers failed or blocked")
+	select {
+	case ips := <-resultChan:
+		return ips, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("all DoH providers failed or context cancelled")
+	}
 }

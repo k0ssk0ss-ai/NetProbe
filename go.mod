@@ -1,4 +1,4 @@
-module github.com/antigravity/netprobe
+module github.com/k0ssk0ss-ai/netprobe
 
 go 1.26.4
 
