@@ -16,3 +16,8 @@ netprobe_report.json
 # OS Files
 .DS_Store
 Thumbs.db
+
+# Drafts and Test Logs
+test/
+test2/
+_ai_drafts_and_notes/
