@@ -36,4 +36,4 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: NetProbe-Android
-        path: fyne-cross/bin/android/*.apk
+        path: fyne-cross/dist/android/*.apk
