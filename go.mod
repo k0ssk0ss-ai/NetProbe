@@ -1,6 +1,6 @@
 module github.com/k0ssk0ss-ai/netprobe
 
-go 1.26.4
+go 1.24.0
 
 require (
 	fyne.io/fyne/v2 v2.7.4
