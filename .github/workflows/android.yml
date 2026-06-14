@@ -30,7 +30,7 @@ jobs:
       run: go install github.com/fyne-io/fyne-cross@latest
 
     - name: Build APK with Fyne-Cross
-      run: ~/go/bin/fyne-cross android -app-id com.netprobe.crowdsource -dir cmd/app -name "NetProbe Crowdsource"
+      run: ~/go/bin/fyne-cross android -app-id com.netprobe.crowdsource -name "NetProbe Crowdsource" ./cmd/app
       
     - name: Upload APK
       uses: actions/upload-artifact@v4
