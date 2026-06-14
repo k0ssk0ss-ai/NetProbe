@@ -1,0 +1,183 @@
+[
+  {
+    "timestamp": "2026-06-12T20:45:46.952119+03:00",
+    "target_host": "youtube.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [],
+        "doh_success": false,
+        "tls_cert_valid": false,
+        "spoofing_detected": false,
+        "errors": [
+          "DNS Error: all resolvers failed"
+        ]
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": false,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 239.67,
+        "tcp_jitter_ms": 0.94,
+        "errors": [
+          "UDP 53 Error: read udp 192.168.0.133:55565-\u003e77.88.8.8:53: i/o timeout"
+        ]
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": true,
+        "block_method": "HTTP Redirect/Inject: HTTP/1.1 409 Conflict"
+      }
+    },
+    "recommendations": [
+      "[HTTP] ISP intercepts unencrypted HTTP Host headers. Avoid transparent proxies without encryption.",
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:45:51.953864+03:00",
+    "target_host": "web.telegram.org",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "149.154.167.99"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": false,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 34.33,
+        "tcp_jitter_ms": 2.05,
+        "udp_rtt_ms": 92,
+        "nat_type": "Unknown",
+        "errors": [
+          "UDP 53 Error: read udp 192.168.0.133:56270-\u003e77.88.8.8:53: i/o timeout"
+        ]
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": false,
+        "errors": [
+          "[Clean] No DPI interference detected."
+        ]
+      }
+    },
+    "recommendations": [
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:45:56.9547577+03:00",
+    "target_host": "discord.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "162.159.136.232",
+          "162.159.138.232",
+          "162.159.135.232",
+          "162.159.128.233",
+          "162.159.137.232"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": false,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 33,
+        "tcp_jitter_ms": 4.97,
+        "udp_rtt_ms": 80,
+        "nat_type": "Unknown",
+        "errors": [
+          "UDP 53 Error: read udp 192.168.0.133:58434-\u003e77.88.8.8:53: i/o timeout"
+        ]
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": false,
+        "errors": [
+          "[Clean] No DPI interference detected."
+        ]
+      }
+    },
+    "recommendations": [
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:46:01.9717502+03:00",
+    "target_host": "instagram.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "157.240.205.174"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": false,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 33.33,
+        "tcp_jitter_ms": 2.62,
+        "udp_rtt_ms": 115,
+        "nat_type": "Unknown",
+        "errors": [
+          "UDP 53 Error: read udp 192.168.0.133:51706-\u003e77.88.8.8:53: i/o timeout"
+        ]
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": true,
+        "block_method": "HTTP Redirect/Inject: HTTP/1.1 409 Conflict"
+      }
+    },
+    "recommendations": [
+      "[HTTP] ISP intercepts unencrypted HTTP Host headers. Avoid transparent proxies without encryption.",
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:46:06.9737771+03:00",
+    "target_host": "twitter.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "162.159.140.229"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": false,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 34.33,
+        "tcp_jitter_ms": 4.19,
+        "udp_rtt_ms": 89,
+        "nat_type": "Unknown",
+        "errors": [
+          "UDP 53 Error: read udp 192.168.0.133:64224-\u003e77.88.8.8:53: i/o timeout"
+        ]
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": false,
+        "errors": [
+          "[Clean] No DPI interference detected."
+        ]
+      }
+    },
+    "recommendations": [
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  }
+]

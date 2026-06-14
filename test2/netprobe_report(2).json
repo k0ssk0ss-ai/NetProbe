@@ -1,0 +1,175 @@
+[
+  {
+    "timestamp": "2026-06-12T20:46:52.3675666+03:00",
+    "target_host": "youtube.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "142.251.143.142"
+        ],
+        "doh_success": false,
+        "tls_cert_valid": false,
+        "spoofing_detected": false,
+        "errors": [
+          "TLS Cert Error: dial tcp 142.251.143.142:443: i/o timeout"
+        ]
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": true,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 63.67,
+        "tcp_jitter_ms": 0.94
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": true,
+        "block_method": "HTTP Redirect/Inject: HTTP/1.1 409 Conflict"
+      }
+    },
+    "recommendations": [
+      "[HTTP] ISP intercepts unencrypted HTTP Host headers. Avoid transparent proxies without encryption.",
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:46:57.3685093+03:00",
+    "target_host": "web.telegram.org",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "149.154.167.99"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": false,
+        "spoofing_detected": true,
+        "errors": [
+          "TLS Cert Error: dial tcp 149.154.167.99:443: i/o timeout",
+          "[Warning] System IP does not match DoH IP and TLS failed. Possible DNS spoofing."
+        ]
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": true,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 31.67,
+        "tcp_jitter_ms": 7.41,
+        "udp_rtt_ms": 52,
+        "nat_type": "Unknown"
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": false,
+        "errors": [
+          "[Clean] No DPI interference detected."
+        ]
+      }
+    },
+    "recommendations": [
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction.",
+      "[DNS] DNS Spoofing detected. Configure your client to enforce encrypted DNS (DoH/DoT)."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:47:02.3697378+03:00",
+    "target_host": "discord.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "162.159.137.232",
+          "162.159.138.232",
+          "162.159.136.232",
+          "162.159.135.232",
+          "162.159.128.233"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": true,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 29,
+        "tcp_jitter_ms": 5.72,
+        "udp_rtt_ms": 45,
+        "nat_type": "Unknown"
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": false,
+        "errors": [
+          "[Clean] No DPI interference detected."
+        ]
+      }
+    },
+    "recommendations": [
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:47:07.3699207+03:00",
+    "target_host": "instagram.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "157.240.253.174"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": true,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 30.33,
+        "tcp_jitter_ms": 4.5,
+        "udp_rtt_ms": 41,
+        "nat_type": "Unknown"
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": true,
+        "block_method": "HTTP Redirect/Inject: HTTP/1.1 409 Conflict"
+      }
+    },
+    "recommendations": [
+      "[HTTP] ISP intercepts unencrypted HTTP Host headers. Avoid transparent proxies without encryption.",
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  },
+  {
+    "timestamp": "2026-06-12T20:47:12.370577+03:00",
+    "target_host": "twitter.com",
+    "results": {
+      "dns": {
+        "resolved_ips": [
+          "162.159.140.229"
+        ],
+        "doh_success": true,
+        "tls_cert_valid": true,
+        "spoofing_detected": false
+      },
+      "transport": {
+        "tcp_443_open": true,
+        "udp_53_works": true,
+        "udp_443_works": true,
+        "tcp_rtt_avg_ms": 33.33,
+        "tcp_jitter_ms": 3.77,
+        "udp_rtt_ms": 36,
+        "nat_type": "Unknown"
+      },
+      "dpi": {
+        "sni_blocked": false,
+        "http_blocked": false,
+        "errors": [
+          "[Clean] No DPI interference detected."
+        ]
+      }
+    },
+    "recommendations": [
+      "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC on port 443 are highly recommended for maximum speed and latency reduction."
+    ]
+  }
+]

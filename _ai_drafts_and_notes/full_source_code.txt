@@ -1,0 +1,856 @@
+package engine
+
+import (
+	"context"
+	"crypto/tls"
+	"net"
+
+	"github.com/miekg/dns"
+)
+
+// EN: CheckDNS tests for DNS spoofing and IP blocking.
+// RU: CheckDNS проверяет наличие DNS-спуфинга и блокировки по IP.
+func CheckDNS(ctx context.Context, cleanIP string, targetHost string) DNSResult {
+	result := DNSResult{
+		ResolvedIPs:      []string{},
+		DoHSuccess:       false,
+		TLSCertValid:     false,
+		SpoofingDetected: false,
+		Errors:           []string{},
+	}
+
+	// EN: 1. Direct UDP Query (Bypasses OS cache).
+	// RU: 1. Прямой UDP запрос (чтобы обойти кэш ОС).
+	// EN: We send the query to a clean IP on port 53.
+	// RU: Отправляем запрос на доверенный IP (cleanIP) на порт 53.
+	c := new(dns.Client)
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(targetHost), dns.TypeA)
+	
+	r, _, err := c.Exchange(m, net.JoinHostPort(cleanIP, "53"))
+	if err == nil && r != nil && len(r.Answer) > 0 {
+		for _, ans := range r.Answer {
+			if a, ok := ans.(*dns.A); ok {
+				result.ResolvedIPs = append(result.ResolvedIPs, a.A.String())
+			}
+		}
+	} else {
+		// EN: Fallback to DoH directly if port 53 is blocked (never use net.LookupHost in mobile VPNs)
+		// RU: Фолбэк на DoH, так как системный net.LookupHost на Android/iOS вызовет луп.
+		ips, err := GetTrustedDoH(ctx, targetHost)
+		if err == nil && len(ips) > 0 {
+			result.ResolvedIPs = ips
+			result.DoHSuccess = true
+		} else {
+			result.Errors = append(result.Errors, "DNS Error: all resolvers failed")
+			return result
+		}
+	}
+
+	if len(result.ResolvedIPs) == 0 {
+		result.Errors = append(result.Errors, "Failed to resolve IPs.")
+		return result
+	}
+
+	// EN: Verify against DoH only if we haven't already fallen back to it
+	// RU: Проверяем через DoH, только если мы еще не переключились на него
+	if !result.DoHSuccess {
+		dohIPs, err := GetTrustedDoH(ctx, targetHost)
+		if err == nil && len(dohIPs) > 0 {
+			result.DoHSuccess = true
+			matchFound := false
+			for _, sysIP := range result.ResolvedIPs {
+				for _, trustIP := range dohIPs {
+					if sysIP == trustIP {
+						matchFound = true
+						break
+					}
+				}
+			}
+			if !matchFound {
+				result.SpoofingDetected = true
+				result.Errors = append(result.Errors, "[Warning] System IP does not match DoH IP. Possible DNS spoofing.")
+			}
+		}
+	}
+
+	// EN: 3. Verify TLS certificate.
+	// RU: 3. Проверяем TLS сертификат.
+	// EN: This is the ultimate proof that the IP belongs to the target domain, not an ISP block page.
+	// RU: Это 100% способ убедиться, что IP настоящий, а не провайдерская заглушка.
+	targetIP := result.ResolvedIPs[0]
+	certValid, tlsErr := verifyTLS(ctx, targetIP, targetHost)
+	
+	result.TLSCertValid = certValid
+	
+	if tlsErr != nil {
+		result.Errors = append(result.Errors, "TLS Cert Error: "+tlsErr.Error())
+		result.SpoofingDetected = true
+	}
+
+	return result
+}
+
+// EN: verifyTLS establishes a connection and verifies the certificate
+// RU: verifyTLS устанавливает соединение и проверяет сертификат
+func verifyTLS(ctx context.Context, ip string, hostname string) (bool, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip, "443"))
+	if err != nil {
+		return false, err
+	}
+	defer conn.Close()
+
+	config := &tls.Config{
+		ServerName: hostname, // EN: Ensure server provides valid certificate for the target domain
+	}
+	tlsConn := tls.Client(conn, config)
+	defer tlsConn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		tlsConn.SetDeadline(deadline)
+	}
+	
+	err = tlsConn.Handshake()
+	if err != nil {
+		return false, err
+	}
+
+	return true, nil
+}
+package engine
+
+import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net"
+	"strings"
+	"time"
+)
+
+// EN: CheckDPI performs active DPI evasion heuristics
+// RU: CheckDPI выполняет активные эвристики для обнаружения DPI
+func CheckDPI(ctx context.Context, cleanIP string, bannedSNI string) DPIResult {
+	result := DPIResult{
+		SNIBlocked:  false,
+		HTTPBlocked: false,
+		Errors:      []string{},
+	}
+
+	// EN: 1. TLS SNI Test
+	// RU: 1. Тест на SNI (Server Name Indication)
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanIP, "443"))
+	if err != nil {
+		result.Errors = append(result.Errors, "DPI TLS connect error: "+err.Error())
+	} else {
+		defer conn.Close()
+		config := &tls.Config{
+			ServerName:         bannedSNI, // Inject banned domain
+			InsecureSkipVerify: true,
+		}
+
+		sendTime := time.Now()
+		tlsConn := tls.Client(conn, config)
+		defer tlsConn.Close()
+		if deadline, ok := ctx.Deadline(); ok {
+			tlsConn.SetDeadline(deadline)
+		}
+
+		err = tlsConn.Handshake()
+		rstDelay := time.Since(sendTime)
+		if err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "reset by peer") || strings.Contains(errStr, "10054") || strings.Contains(errStr, "EOF") {
+				result.SNIBlocked = true
+				result.BlockMethod = "TCP RST"
+				if rstDelay < 500*time.Millisecond {
+					result.LikelyDPIInjected = true
+				}
+			} else if strings.Contains(errStr, "i/o timeout") || strings.Contains(errStr, "deadline exceeded") {
+				result.SNIBlocked = true
+				result.BlockMethod = "Blackhole"
+			} else {
+				result.Errors = append(result.Errors, "TLS Error: "+errStr)
+			}
+		}
+	}
+
+	// EN: 2. HTTP Host Header Test
+	// RU: 2. Тест HTTP Host Header
+	// EN: Sends an unencrypted HTTP request. If ISP reads HTTP headers, it will block it.
+	// RU: Отправляет нешифрованный HTTP запрос. Если провайдер читает заголовки, он заблокирует его.
+	// EN: For HTTP test we always use 1.1.1.1 because its raw HTTP 80 response is known (301, 400, 403).
+	// RU: Для HTTP теста всегда используем 1.1.1.1, так как его ответ на 80 порту известен.
+	httpTarget := "1.1.1.1"
+	connHTTP, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(httpTarget, "80"))
+	if err == nil {
+		defer connHTTP.Close()
+		if deadline, ok := ctx.Deadline(); ok {
+			connHTTP.SetDeadline(deadline)
+		}
+		req := fmt.Sprintf("GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", bannedSNI)
+		_, err = connHTTP.Write([]byte(req))
+		if err != nil {
+			if strings.Contains(err.Error(), "reset by peer") || strings.Contains(err.Error(), "10054") {
+				result.HTTPBlocked = true
+				if result.BlockMethod == "" {
+					result.BlockMethod = "TCP RST (HTTP)"
+				}
+			}
+		} else {
+			reader := bufio.NewReader(connHTTP)
+			respLine, err := reader.ReadString('\n')
+			if err != nil {
+				if strings.Contains(err.Error(), "reset by peer") || strings.Contains(err.Error(), "10054") || strings.Contains(err.Error(), "EOF") {
+					result.HTTPBlocked = true
+					if result.BlockMethod == "" {
+						result.BlockMethod = "TCP RST (HTTP Read)"
+					}
+				}
+			} else {
+				// EN: Cloudflare (1.1.1.1) on port 80 always returns 301, 400, or 403.
+				// RU: Cloudflare (1.1.1.1) на 80 порту всегда дает 301, 400 или 403.
+				// EN: If an ISP intercepts and injects a block page, we will get 200 OK or a different redirect.
+				// RU: Если провайдер подменяет пакет на страницу-заглушку, ответ будет другим.
+				if !strings.Contains(respLine, "301") && !strings.Contains(respLine, "400") && !strings.Contains(respLine, "403") {
+					result.HTTPBlocked = true
+					result.BlockMethod = "HTTP Redirect/Inject: " + strings.TrimSpace(respLine)
+				}
+			}
+		}
+	}
+
+	if !result.SNIBlocked && !result.HTTPBlocked {
+		result.Errors = append(result.Errors, "[Clean] No DPI interference detected.")
+	}
+
+	return result
+}
+package engine
+
+import "time"
+
+// ProbeReport contains the final results of the scan
+type ProbeReport struct {
+	Timestamp       time.Time       `json:"timestamp"`
+	TargetHost      string          `json:"target_host"`
+	Results         Results         `json:"results"`
+	Recommendations []string        `json:"recommendations"`
+}
+
+type Results struct {
+	DNS       DNSResult       `json:"dns"`
+	Transport TransportResult `json:"transport"`
+	DPI       DPIResult       `json:"dpi"`
+}
+
+// DNSResult stores DNS analysis
+type DNSResult struct {
+	ResolvedIPs      []string `json:"resolved_ips"`
+	DoHSuccess       bool     `json:"doh_success"`
+	TLSCertValid     bool     `json:"tls_cert_valid"`
+	SpoofingDetected bool     `json:"spoofing_detected"`
+	Errors           []string `json:"errors,omitempty"`
+}
+
+// TransportResult stores TCP and UDP reachability and QoS metrics
+type TransportResult struct {
+	TCP443Open  bool     `json:"tcp_443_open"`
+	UDP53Works  bool     `json:"udp_53_works"`
+	UDP443Works bool     `json:"udp_443_works"`
+
+	TCPRTTAvgMs      float64 `json:"tcp_rtt_avg_ms,omitempty"`
+	TCPJitterMs      float64 `json:"tcp_jitter_ms,omitempty"`
+	UDPRTTMs         float64 `json:"udp_rtt_ms,omitempty"`
+	NATType          string  `json:"nat_type,omitempty"`
+	IsUDPShaped      bool    `json:"is_udp_shaped,omitempty"`
+	UDPShapingReason string  `json:"udp_shaping_reason,omitempty"`
+
+	Errors []string `json:"errors,omitempty"`
+}
+
+// DPIResult stores heuristics for Deep Packet Inspection (SNI and HTTP Host)
+type DPIResult struct {
+	SNIBlocked    bool   `json:"sni_blocked"`
+	HTTPBlocked   bool   `json:"http_blocked"`
+	BlockMethod   string `json:"block_method,omitempty"`
+	LikelyDPIInjected bool `json:"likely_dpi_injected,omitempty"`
+	Errors        []string `json:"errors,omitempty"`
+}
+package engine
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net"
+	"net/http"
+)
+
+// EN: CleanIPPool contains trusted public IPs that shouldn't be blocked by default.
+// RU: Пул доверенных публичных IP (Cloudflare, Google, Yandex, Quad9).
+var CleanIPPool = []string{
+	"1.1.1.1",   // Cloudflare
+	"8.8.8.8",   // Google
+	"77.88.8.8", // Yandex
+	"9.9.9.9",   // Quad9
+}
+
+// EN: DoHPool contains trusted DoH endpoints.
+// RU: Пул доверенных DoH серверов.
+var DoHPool = []string{
+	"https://cloudflare-dns.com/dns-query",
+	"https://dns.google/resolve",
+	"https://dns.quad9.net/dns-query",
+}
+
+// EN: GetCleanIP finds the first reachable clean IP to avoid false positives if Cloudflare is blocked.
+// RU: GetCleanIP находит первый доступный IP из пула, чтобы избежать ложных срабатываний при блоке 1.1.1.1.
+func GetCleanIP(ctx context.Context) string {
+	ipChan := make(chan string, len(CleanIPPool))
+
+	for _, ip := range CleanIPPool {
+		go func(targetIP string) {
+			var dialer net.Dialer
+			conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(targetIP, "443"))
+			if err == nil {
+				conn.Close()
+				ipChan <- targetIP
+			}
+		}(ip)
+	}
+
+	select {
+	case activeIP := <-ipChan:
+		return activeIP
+	case <-ctx.Done():
+		return "1.1.1.1"
+	}
+}
+
+// EN: GetTrustedDoH requests IP via multiple DoH providers to bypass blockings.
+// RU: GetTrustedDoH запрашивает IP через пул DoH серверов.
+func GetTrustedDoH(ctx context.Context, domain string) ([]string, error) {
+	resultChan := make(chan []string, len(DoHPool))
+
+	for _, url := range DoHPool {
+		go func(providerUrl string) {
+			client := &http.Client{}
+			fullUrl := fmt.Sprintf("%s?name=%s&type=A", providerUrl, domain)
+			req, _ := http.NewRequestWithContext(ctx, "GET", fullUrl, nil)
+			req.Header.Set("Accept", "application/dns-json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			var data struct {
+				Answer []struct {
+					Type int    `json:"type"`
+					Data string `json:"data"`
+				} `json:"Answer"`
+			}
+
+			if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+				return
+			}
+
+			var ips []string
+			for _, ans := range data.Answer {
+				if ans.Type == 1 {
+					ips = append(ips, ans.Data)
+				}
+			}
+
+			if len(ips) > 0 {
+				resultChan <- ips
+			}
+		}(url)
+	}
+
+	select {
+	case ips := <-resultChan:
+		return ips, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("all DoH providers failed or context cancelled")
+	}
+}
+package engine
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"net"
+	"sync"
+	"time"
+)
+
+// RTTStats holds statistics about TCP latency
+type RTTStats struct {
+	AvgMs    float64
+	JitterMs float64
+}
+
+// MeasureTCPRTT runs multiple parallel dials to calculate average RTT and Jitter
+func MeasureTCPRTT(ctx context.Context, host string, port string, samples int) RTTStats {
+	results := make(chan time.Duration, samples)
+
+	var wg sync.WaitGroup
+	for i := 0; i < samples; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			
+			start := time.Now()
+			conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+			rtt := time.Since(start)
+			
+			if err == nil {
+				conn.Close()
+				results <- rtt
+			}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var durations []float64
+	for d := range results {
+		durations = append(durations, float64(d.Milliseconds()))
+	}
+
+	if len(durations) == 0 {
+		return RTTStats{}
+	}
+
+	var sum float64
+	for _, v := range durations {
+		sum += v
+	}
+	mean := sum / float64(len(durations))
+
+	var variance float64
+	for _, v := range durations {
+		diff := v - mean
+		variance += diff * diff
+	}
+
+	return RTTStats{
+		AvgMs:    math.Round(mean*100) / 100,
+		JitterMs: math.Round(math.Sqrt(variance/float64(len(durations)))*100) / 100,
+	}
+}
+
+// STUN Binding Request, RFC 5389
+var stunRequest = []byte{
+	0x00, 0x01,
+	0x00, 0x00,
+	0x21, 0x12, 0xA4, 0x42,
+	0xDE, 0xAD, 0xBE, 0xEF,
+	0x01, 0x02, 0x03, 0x04,
+	0x05, 0x06, 0x07, 0x08,
+}
+
+// MeasureUDPRTT uses STUN to measure UDP latency
+func MeasureUDPRTT(ctx context.Context, stunServer string) (time.Duration, string, error) {
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(ctx, "udp", stunServer)
+	if err != nil {
+		return 0, "", err
+	}
+	defer conn.Close()
+
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	}
+
+	start := time.Now()
+	_, err = conn.Write(stunRequest)
+	if err != nil {
+		return 0, "", err
+	}
+
+	buf := make([]byte, 512)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return 0, "", err
+	}
+
+	if n >= 20 && buf[4] == 0x21 && buf[5] == 0x12 {
+		return time.Since(start), "Symmetric/Port-Restricted", nil // Simplified NAT type for now
+	}
+
+	return 0, "", fmt.Errorf("not a valid STUN response")
+}
+
+// DetectUDPShaping compares RTT of small vs large QUIC packets
+func DetectUDPShaping(ctx context.Context, cleanIP string) (bool, string) {
+	// Send a small packet (100 bytes) and a large packet (1200 bytes)
+	// If the large packet is dropped or takes >3x longer, UDP is likely shaped.
+	
+	measureQuicRtt := func(size int) time.Duration {
+		var dialer net.Dialer
+		conn, err := dialer.DialContext(ctx, "udp", net.JoinHostPort(cleanIP, "443"))
+		if err != nil {
+			return -1
+		}
+		defer conn.Close()
+
+		if deadline, ok := ctx.Deadline(); ok {
+			conn.SetDeadline(deadline)
+		}
+
+		payload := make([]byte, size)
+		payload[0] = 0xc0
+		payload[1] = 0x0a
+		payload[2] = 0x0a
+		payload[3] = 0x0a
+		payload[4] = 0x0a
+		payload[5] = 0x08
+		payload[6] = 0x00
+
+		start := time.Now()
+		_, err = conn.Write(payload)
+		if err != nil {
+			return -1
+		}
+
+		buf := make([]byte, 1500)
+		n, err := conn.Read(buf)
+		if err != nil || n == 0 {
+			return -1
+		}
+		return time.Since(start)
+	}
+
+	smallRtt := measureQuicRtt(100)
+	largeRtt := measureQuicRtt(1200)
+
+	if smallRtt != -1 && largeRtt == -1 {
+		return true, "Large QUIC packets dropped (MTU Shaping)"
+	}
+
+	if smallRtt != -1 && largeRtt != -1 {
+		if float64(largeRtt) > float64(smallRtt)*3.0 && largeRtt > 100*time.Millisecond {
+			return true, fmt.Sprintf("Large packets artificially delayed (%.1fms vs %.1fms)", float64(largeRtt.Milliseconds()), float64(smallRtt.Milliseconds()))
+		}
+	}
+
+	return false, ""
+}
+package engine
+
+// EN: AnalyzeResults takes raw telemetry and generates actionable recommendations
+// RU: AnalyzeResults принимает сырую телеметрию и выдает массив рекомендаций
+func AnalyzeResults(report *ProbeReport) {
+	var recs []string
+
+	if report.Results.DPI.SNIBlocked {
+		recs = append(recs, "[PROTOCOL] SNI filtering is active. Classic protocols (OpenVPN, WireGuard) are vulnerable. Recommended: VLESS+Reality, Trojan, or Shadowsocks-2022.")
+	}
+
+	if report.Results.DPI.HTTPBlocked {
+		recs = append(recs, "[HTTP] ISP intercepts unencrypted HTTP Host headers. Avoid transparent proxies without encryption.")
+	}
+
+	if !report.Results.Transport.UDP53Works && !report.Results.Transport.UDP443Works {
+		recs = append(recs, "[TRANSPORT] All UDP traffic is blocked or throttled. Avoid pure WireGuard and Hysteria2. Use TCP-based transports (VLESS/Trojan via TCP/ws).")
+	} else if report.Results.Transport.UDP443Works {
+		recs = append(recs, "[TRANSPORT] UDP 443 (QUIC) is open! Protocols like Hysteria2 and TUIC are highly recommended for maximum speed and latency reduction.")
+	} else if report.Results.Transport.UDP53Works && !report.Results.Transport.UDP443Works {
+		recs = append(recs, "[TRANSPORT] UDP 53 is open, but UDP 443 (QUIC) is blocked. Avoid Hysteria2. WireGuard might work if 53 is not shaped, but TCP (VLESS) is safer.")
+	}
+
+	if report.Results.DNS.SpoofingDetected {
+		recs = append(recs, "[DNS] DNS Spoofing detected. Configure your client to enforce encrypted DNS (DoH/DoT).")
+	}
+
+	if len(recs) == 0 {
+		recs = append(recs, "[CLEAN] No harsh blocking detected. Any fast protocol (WireGuard, OpenVPN) can be used safely.")
+	}
+
+	report.Recommendations = recs
+}
+package engine
+
+import (
+	"context"
+	"math"
+	"net"
+)
+
+// EN: CheckTransport checks basic TCP and UDP connectivity
+// RU: CheckTransport проверяет базовую связность по TCP и UDP
+func CheckTransport(ctx context.Context, cleanIP string) TransportResult {
+	result := TransportResult{
+		TCP443Open:  false,
+		UDP53Works:  false,
+		UDP443Works: false,
+		Errors:      []string{},
+	}
+
+	// EN: 1. TCP 443 Test (HTTPS) and QoS
+	// RU: 1. Проверка TCP 443 (HTTPS) и QoS
+	var dialer net.Dialer
+	connTCP, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanIP, "443"))
+	if err == nil {
+		result.TCP443Open = true
+		connTCP.Close()
+
+		// Run QoS metric for TCP
+		stats := MeasureTCPRTT(ctx, cleanIP, "443", 3)
+		result.TCPRTTAvgMs = stats.AvgMs
+		result.TCPJitterMs = stats.JitterMs
+	} else {
+		result.Errors = append(result.Errors, "TCP Error: "+err.Error())
+	}
+
+	// EN: 2. UDP 53 Test (DNS)
+	// RU: 2. Проверка UDP 53 (DNS)
+	// EN: We send a raw DNS packet to cleanIP to verify UDP traffic is not dropped
+	// RU: Отправляем сырой пакет на cleanIP, чтобы проверить, проходит ли UDP трафик
+	connUDP, err := dialer.DialContext(ctx, "udp", net.JoinHostPort(cleanIP, "53"))
+	if err == nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			connUDP.SetDeadline(deadline)
+		}
+		// EN: Raw DNS query for google.com (A record)
+		// RU: Сырой DNS запрос для google.com (A-запись)
+		dnsQuery := []byte{
+			0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			0x06, 0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65, 0x03, 0x63, 0x6f, 0x6d, 0x00,
+			0x00, 0x01, 0x00, 0x01,
+		}
+		_, err = connUDP.Write(dnsQuery)
+		if err == nil {
+			buf := make([]byte, 512)
+			n, err := connUDP.Read(buf)
+			if err == nil && n > 0 {
+				result.UDP53Works = true
+			} else {
+				result.Errors = append(result.Errors, "UDP Read Error: "+err.Error())
+			}
+		} else {
+			result.Errors = append(result.Errors, "UDP Write Error: "+err.Error())
+		}
+		connUDP.Close()
+	} else {
+		result.Errors = append(result.Errors, "UDP Dial Error: "+err.Error())
+	}
+
+	// EN: 3. UDP 443 Test (QUIC / Hysteria2)
+	// RU: 3. Проверка UDP 443 (QUIC / Hysteria2)
+	// EN: Send a QUIC Initial packet (Long Header) with dummy version to force Version Negotiation
+	// RU: Отправляем QUIC Initial пакет с фейковой версией, чтобы вызвать Version Negotiation
+	connQUIC, err := dialer.DialContext(ctx, "udp", net.JoinHostPort(cleanIP, "443"))
+	if err == nil {
+		payload := make([]byte, 1200) // EN: Padding is required by QUIC spec
+		payload[0] = 0xc0
+		payload[1] = 0x0a
+		payload[2] = 0x0a
+		payload[3] = 0x0a
+		payload[4] = 0x0a
+		payload[5] = 0x08
+		payload[6] = 0x00
+		for i := 0; i < 8; i++ {
+			payload[7+i] = byte(i)
+		}
+
+		if deadline, ok := ctx.Deadline(); ok {
+			connQUIC.SetDeadline(deadline)
+		}
+		_, err = connQUIC.Write(payload)
+		if err == nil {
+			buf := make([]byte, 1500)
+			n, err := connQUIC.Read(buf)
+			if err == nil && n > 0 {
+				result.UDP443Works = true
+			} else {
+				result.Errors = append(result.Errors, "QUIC Read Error: "+err.Error())
+			}
+		} else {
+			result.Errors = append(result.Errors, "QUIC Write Error: "+err.Error())
+		}
+		connQUIC.Close()
+	} else {
+		result.Errors = append(result.Errors, "QUIC Dial Error: "+err.Error())
+	}
+
+	// 4. Measure UDP RTT via STUN
+	udpRtt, natType, err := MeasureUDPRTT(ctx, "stun.l.google.com:19302")
+	if err == nil {
+		result.UDPRTTMs = math.Round(float64(udpRtt.Milliseconds())*100) / 100
+		result.NATType = natType
+	}
+
+	// 5. Detect UDP MTU Shaping
+	isShaped, shapeReason := DetectUDPShaping(ctx, cleanIP)
+	result.IsUDPShaped = isShaped
+	result.UDPShapingReason = shapeReason
+
+	return result
+}
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/k0ssk0ss-ai/netprobe/pkg/engine"
+)
+
+func main() {
+	// EN: Add command-line flags for different modes of operation
+	// RU: Добавляем флаги командной строки для разных режимов использования
+	daemonMode := flag.Bool("daemon", false, "Start as background web server with UI (Запустить как фоновый веб-сервер с UI)")
+	targetHost := flag.String("target", "twitter.com", "Target domain for testing (Домен для проверки)")
+	flag.Parse()
+
+	if *daemonMode {
+		runDaemon()
+	} else {
+		runCLI(*targetHost)
+	}
+}
+
+// EN: runEngineScans executes all network checks concurrently using goroutines
+// RU: runEngineScans выполняет все сетевые проверки параллельно (горутины)
+func runEngineScans(ctx context.Context, target string) engine.ProbeReport {
+	report := engine.ProbeReport{
+		Timestamp:  time.Now(),
+		TargetHost: target,
+	}
+
+	var transportRes engine.TransportResult
+	var dpiRes engine.DPIResult
+	var dnsRes engine.DNSResult
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+
+	// EN: Resolve a trusted clean IP first to avoid false positives
+	// RU: Получаем чистый IP перед стартом
+	cleanIP := engine.GetCleanIP(ctx)
+
+	// EN: Run 3 independent scanners in parallel
+	// RU: Запускаем 3 независимых сканера параллельно
+	go func() {
+		defer wg.Done()
+		transportRes = engine.CheckTransport(ctx, cleanIP)
+	}()
+
+	go func() {
+		defer wg.Done()
+		dpiRes = engine.CheckDPI(ctx, cleanIP, target)
+	}()
+
+	go func() {
+		defer wg.Done()
+		dnsRes = engine.CheckDNS(ctx, cleanIP, target)
+	}()
+
+	// EN: Wait for the longest test to complete (max 3 seconds)
+	// RU: Ждем завершения самого долгого теста (максимум 3 сек)
+	wg.Wait()
+
+	report.Results.Transport = transportRes
+	report.Results.DPI = dpiRes
+	report.Results.DNS = dnsRes
+
+	// EN: Strategy engine appends recommendations to the report
+	// RU: Движок принятия решений добавляет рекомендации в отчет
+	engine.AnalyzeResults(&report)
+
+	return report
+}
+
+// EN: runCLI is the mode for scripts and parsers. It outputs pure JSON to stdout.
+// RU: runCLI — режим для парсеров и программистов. Выводит чистый JSON.
+// EN: RunScanJSON is the main entry point for Gomobile (Android/iOS)
+// RU: RunScanJSON - главная точка входа для мобильных клиентов
+// go:export RunScanJSON
+func RunScanJSON(target string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	report := runEngineScans(ctx, target)
+	b, err := json.Marshal(report)
+	if err != nil {
+		return `{"error": "serialization failed"}`
+	}
+	return string(b)
+}
+
+func runCLI(target string) {
+	fmt.Printf("Starting NetProbe analysis for target: %s\n", target)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	report := runEngineScans(ctx, target)
+
+	jsonBytes, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "JSON Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(string(jsonBytes))
+}
+
+// EN: runDaemon starts the hybrid system (Backend API + Web UI)
+// RU: runDaemon — запуск гибридной системы (бэкенд + веб-интерфейс)
+func runDaemon() {
+	fmt.Println("===================================================")
+	fmt.Println(" NetProbe (Daemon & Web UI)")
+	fmt.Println("===================================================")
+
+	http.Handle("/", http.FileServer(http.Dir("./web")))
+
+	http.HandleFunc("/api/scan", func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				http.Error(w, fmt.Sprintf(`{"error": "Internal server error: %v"}`, err), http.StatusInternalServerError)
+			}
+		}()
+
+		target := r.URL.Query().Get("target")
+		if target == "" {
+			target = "twitter.com"
+		}
+
+		fmt.Printf("[*] Scan request received for: %s\n", target)
+
+		// EN: Launch the concurrent scanner
+		// RU: Запускаем параллельный сканер
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		report := runEngineScans(ctx, target)
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(report)
+		
+		fmt.Println("[+] Report successfully sent to browser.")
+	})
+
+	port := ":8080"
+	fmt.Printf("[*] Background daemon started!\n")
+	fmt.Printf("[*] Open in browser: http://127.0.0.1%s\n", port)
+	fmt.Printf("[*] For pure CLI JSON output use: ./probe -target=example.com\n")
+	
+	err := http.ListenAndServe(port, nil)
+	if err != nil {
+		log.Fatal("Server start error: ", err)
+	}
+}

@@ -1,0 +1,18 @@
+# Binaries
+probe.exe
+probe
+*.so
+*.aar
+*.xcframework
+
+# Reports
+netprobe_report.json
+*.log
+
+# IDEs
+.idea/
+.vscode/
+
+# OS Files
+.DS_Store
+Thumbs.db
