@@ -82,7 +82,7 @@ func CheckTransport(ctx context.Context, cleanIP string) TransportResult {
 		dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
 		defer dialCancel()
 
-		conn, err := quic.DialAddr(dialCtx, "1.1.1.1:443", tlsConf, quicConf)
+		conn, err := quic.DialAddr(dialCtx, net.JoinHostPort(cleanIP, "443"), tlsConf, quicConf)
 		if err != nil {
 			errStr := err.Error()
 			if strings.Contains(errStr, "tls") ||
@@ -104,10 +104,13 @@ func CheckTransport(ctx context.Context, cleanIP string) TransportResult {
 		mu.Unlock()
 	}()
 
-	// EN: 4. Measure UDP RTT via STUN
+	// EN: 4. Measure UDP RTT via STUN (capped: if STUN is blocked, don't wait the full
+	// EN: scan deadline — it was silently dominating per-domain scan time).
 	go func() {
 		defer wg.Done()
-		udpRtt, natType, err := MeasureUDPRTT(ctx, "stun.l.google.com:19302")
+		sctx, scancel := context.WithTimeout(ctx, destProbeTimeout)
+		defer scancel()
+		udpRtt, natType, err := MeasureUDPRTT(sctx, "stun.l.google.com:19302")
 		if err == nil {
 			mu.Lock()
 			result.UDPRTTMs = math.Round(float64(udpRtt.Milliseconds())*100) / 100

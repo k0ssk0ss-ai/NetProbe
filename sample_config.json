@@ -1,0 +1,37 @@
+{
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "reality-chrome",
+      "server": "www.cloudflare.com",
+      "server_port": 443,
+      "uuid": "00000000-0000-0000-0000-000000000000",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.cloudflare.com",
+        "utls": { "enabled": true, "fingerprint": "chrome" },
+        "reality": { "enabled": true, "public_key": "DEMO_PUBKEY", "short_id": "ab12" }
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan-tls",
+      "server": "www.microsoft.com",
+      "server_port": 443,
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "utls": { "enabled": true, "fingerprint": "chrome" }
+      }
+    },
+    {
+      "type": "hysteria2",
+      "tag": "hysteria-udp",
+      "server": "1.1.1.1",
+      "server_port": 8443,
+      "tls": { "enabled": true, "server_name": "www.cloudflare.com" }
+    },
+    { "type": "direct", "tag": "direct" }
+  ]
+}

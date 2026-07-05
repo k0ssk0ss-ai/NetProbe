@@ -5,8 +5,10 @@ probe
 *.aar
 *.xcframework
 
-# Reports
+# Reports (generated at runtime)
 netprobe_report.json
+decision_report.json
+diag*.json
 *.log
 
 # IDEs
@@ -21,3 +23,11 @@ Thumbs.db
 test/
 test2/
 _ai_drafts_and_notes/
+
+# Local throwaway helper scripts (not part of the project)
+analyze_local.py
+check_status.py
+download_apk.py
+get_logs.py
+research_ripe.py
+ripe_atlas_demo.py

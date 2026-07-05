@@ -72,7 +72,8 @@ func CheckDNS(ctx context.Context, cleanIP string, targetHost string) DNSResult 
 
 		if tlsErr != nil {
 			errStr := tlsErr.Error()
-			// EN: If it's a certificate error, the IP belongs to a blockpage or interceptor.
+			// EN: A certificate error means the IP served the WRONG cert — a real
+			// interceptor / blockpage. That is genuine DNS spoofing.
 			if strings.Contains(errStr, "certificate") || strings.Contains(errStr, "x509") || strings.Contains(errStr, "authority") {
 				result.SpoofingDetected = true
 				result.Errors = append(result.Errors, "[Warning] TLS Cert Invalid. DNS Spoofing detected!")
@@ -84,27 +85,11 @@ func CheckDNS(ctx context.Context, cleanIP string, targetHost string) DNSResult 
 					}
 				}
 			} else {
-				result.Errors = append(result.Errors, "TLS Cert Error: "+errStr)
-				// EN: If it's a network timeout, check if IPs match DoH to guess if it's spoofed
-				if result.DoHSuccess {
-					dohIPs, _ := GetTrustedDoH(ctx, targetHost)
-					matchFound := false
-					for _, sysIP := range result.ResolvedIPs {
-						for _, trustIP := range dohIPs {
-							if sysIP == trustIP {
-								matchFound = true
-								break
-							}
-						}
-					}
-					if !matchFound {
-						result.SpoofingDetected = true
-						result.Errors = append(result.Errors, "[Warning] System IP does not match DoH IP and TLS failed. Possible DNS spoofing.")
-						if len(dohIPs) > 0 {
-							result.ResolvedIPs = dohIPs
-						}
-					}
-				}
+				// EN: RST/timeout on the real IP is TLS-layer blocking (DPI or IP filtering),
+				// EN: NOT DNS spoofing. Previously this was mislabelled as spoofing (a false
+				// EN: positive on CDN/anycast targets). Record it honestly instead.
+				result.TLSBlocked = true
+				result.Errors = append(result.Errors, "[Warning] TLS to real IP failed — DPI/IP block, not spoofing: "+errStr)
 			}
 		}
 	}
@@ -115,8 +100,11 @@ func CheckDNS(ctx context.Context, cleanIP string, targetHost string) DNSResult 
 // EN: verifyTLS establishes a connection and verifies the certificate
 // RU: verifyTLS устанавливает соединение и проверяет сертификат
 func verifyTLS(ctx context.Context, ip string, hostname string) (bool, error) {
+	pctx, cancel := destProbeCtx(ctx)
+	defer cancel()
+
 	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(ip, "443"))
+	conn, err := dialer.DialContext(pctx, "tcp", net.JoinHostPort(ip, "443"))
 	if err != nil {
 		return false, err
 	}
@@ -127,7 +115,7 @@ func verifyTLS(ctx context.Context, ip string, hostname string) (bool, error) {
 	tlsConn := tls.Client(conn, config)
 	defer tlsConn.Close() // EN: This will also close the underlying conn
 
-	if deadline, ok := ctx.Deadline(); ok {
+	if deadline, ok := pctx.Deadline(); ok {
 		tlsConn.SetDeadline(deadline)
 	}
 

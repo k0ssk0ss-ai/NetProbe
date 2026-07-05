@@ -10,21 +10,38 @@ import (
 	"time"
 )
 
-// EN: CheckDPI performs active DPI evasion heuristics
-// RU: CheckDPI выполняет активные эвристики для обнаружения DPI
-func CheckDPI(ctx context.Context, cleanIP string, bannedSNI string) DPIResult {
+// EN: CheckDPI performs active DPI heuristics against the target's REAL IP.
+// RU: CheckDPI выполняет активные эвристики DPI против РЕАЛЬНОГО IP цели.
+// EN: Probing the real destination (not a clean IP) is what catches destination-aware
+// EN: blocking — an RST/blackhole on the actual target, which stateful DPI applies there
+// EN: but not to an unrelated clean IP carrying the same SNI.
+func CheckDPI(ctx context.Context, targetIP string, targetSNI string) DPIResult {
 	result := DPIResult{
 		SNIBlocked:  false,
 		HTTPBlocked: false,
 		Errors:      []string{},
 	}
+	bannedSNI := targetSNI
 
-	// EN: 1. TLS SNI Test
-	// RU: 1. Тест на SNI (Server Name Indication)
+	// EN: 1. TLS SNI Test against the real target IP.
+	// RU: 1. Тест на SNI против реального IP цели.
 	var dialer net.Dialer
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(cleanIP, "443"))
+	pctx, cancel := destProbeCtx(ctx)
+	defer cancel()
+	conn, err := dialer.DialContext(pctx, "tcp", net.JoinHostPort(targetIP, "443"))
 	if err != nil {
-		result.Errors = append(result.Errors, "DPI TLS connect error: "+err.Error())
+		// EN: A failed connect to the REAL target IP is itself a block signal (RST/blackhole),
+		// EN: not a "clean" result. Classify it rather than silently passing.
+		switch classifyFingerprintErr(err) {
+		case FPVerdictRST:
+			result.SNIBlocked = true
+			result.BlockMethod = "TCP RST (connect)"
+		case FPVerdictBlackhole:
+			result.SNIBlocked = true
+			result.BlockMethod = "Blackhole (connect)"
+		default:
+			result.Errors = append(result.Errors, "DPI connect error: "+err.Error())
+		}
 	} else {
 		defer conn.Close()
 		config := &tls.Config{
@@ -35,25 +52,25 @@ func CheckDPI(ctx context.Context, cleanIP string, bannedSNI string) DPIResult {
 		sendTime := time.Now()
 		tlsConn := tls.Client(conn, config)
 		defer tlsConn.Close()
-		if deadline, ok := ctx.Deadline(); ok {
+		if deadline, ok := pctx.Deadline(); ok {
 			tlsConn.SetDeadline(deadline)
 		}
 
 		err = tlsConn.Handshake()
 		rstDelay := time.Since(sendTime)
 		if err != nil {
-			errStr := err.Error()
-			if strings.Contains(errStr, "reset by peer") || strings.Contains(errStr, "10054") || strings.Contains(errStr, "EOF") {
+			switch classifyFingerprintErr(err) {
+			case FPVerdictRST:
 				result.SNIBlocked = true
 				result.BlockMethod = "TCP RST"
 				if rstDelay < 500*time.Millisecond {
 					result.LikelyDPIInjected = true
 				}
-			} else if strings.Contains(errStr, "i/o timeout") || strings.Contains(errStr, "deadline exceeded") {
+			case FPVerdictBlackhole:
 				result.SNIBlocked = true
 				result.BlockMethod = "Blackhole"
-			} else {
-				result.Errors = append(result.Errors, "TLS Error: "+errStr)
+			default:
+				result.Errors = append(result.Errors, "TLS Error: "+err.Error())
 			}
 		}
 	}

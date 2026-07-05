@@ -1,181 +1,177 @@
-# ⚡ NetProbe: Smart Proxy & DPI Detection Engine
+# NetProbe — network interference diagnostics & protocol-selection engine
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/k0ssk0ss-ai/netprobe.svg)](https://pkg.go.dev/github.com/k0ssk0ss-ai/netprobe)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [English](#english) | [Русский](#русский)
 
 > [!WARNING]
-> **Beta Software / Experimental**
-> This project is an experimental Proof-of-Concept. It has not been subjected to extensive real-world testing across different ISPs and censorship environments. Expect bugs, false positives in heuristics, and potential instability.
-> 
-> **Экспериментальное ПО**
-> Проект находится в стадии беты и является экспериментальным концептом. Код не проходил массового тестирования в боевых условиях разных провайдеров. Возможны баги, зависания, ложные срабатывания эвристики и нестабильная работа.
+> **Beta / experimental.** The heuristics have been field-validated on a *single* ISP so
+> far. Expect false positives and tuning across different providers and censorship setups.
+> Not audited. See [ROADMAP.md](ROADMAP.md) for what is done vs. pending.
 
 ---
 
 <a name="english"></a>
 ## 🇬🇧 English
 
-**NetProbe** is a lightweight, strictly concurrent Go-based network scanning engine and SDK. It is designed to be easily compiled into `.AAR` (Android) or `.framework` (iOS) via `gomobile` for modern VPN clients. 
+NetProbe is a small Go engine that diagnoses **how** a network path is being interfered
+with — and, given a client's proxy config, picks an outbound that actually gets through.
+It's built to compile into an Android/iOS binding (`gomobile`) and embed into VPN clients.
 
-NetProbe acts as a **Smart QoS (Quality of Service) Engine**. Instead of just checking for blocks, it diagnoses network degradation (like UDP shaping). This allows your VPN client to keep users on battery-friendly, low-latency protocols (like native WireGuard or Hysteria2) when the network is clean, and seamlessly fallback to heavy, battery-draining protocols (like VLESS/Trojan over TCP) *only* when active DPI filtering is detected. All in under 3 seconds.
+The core idea: most clients pick a *server* by latency, but not a *protocol/transport/
+fingerprint* by the censorship method in play. NetProbe measures the method, then decides.
 
-### 🚀 Key Features
+### What it actually does
 
-* **Gomobile-Ready:** Built efficiently. The main entrypoint is in `lib/mobile/api.go` which allows seamless compilation using `gomobile bind`. Uses `quic-go` for true UDP/QUIC handshakes.
-* **Strict Concurrency:** All network checks run in parallel. The entire scan takes exactly as long as the longest timeout (max 3 seconds).
-* **Smart DPI Heuristics:** Detects TLS SNI filtering and unencrypted HTTP Host interception.
-* **Protocol-Specific Checks:** 
-  * Tests UDP 53 (DNS) vs UDP 443 (QUIC) to determine if protocols like **Hysteria2** or **TUIC** will survive.
-  * Tests TCP 443 to fallback to **VLESS/Trojan** if UDP is shaped.
-* **DNS Spoofing Detection:** Compares system DNS resolution against trusted DoH providers and validates TLS certificates. Avoids false positives on Geo-CDN networks. Bypasses DNS-hijacking entirely by hardcoding DoH endpoint IPs.
-* **Dynamic Clean IP Pool:** Automatically finds a working trusted IP (Cloudflare, Google, Yandex, Quad9) on channels to prevent false-positive DPI detections if a specific provider is blocked.
+- **Accurate-mode probing.** DPI, DNS and the fingerprint matrix probe the target's **real
+  IP** (resolved via DoH, bypassing DNS hijacking), so destination-aware blocking (an RST
+  or blackhole on the real host) is caught instead of being reported as "clean".
+- **Survivability Matrix.** Sends several uTLS ClientHello fingerprints (Chrome, Firefox,
+  Safari, iOS, Edge) and reports which survive — automating the manual "switch Chrome→
+  Firefox until it connects" debugging. Emits JA3 and JA4 per profile.
+- **Decision engine (Vector A).** Given the user's outbounds, ranks them under the observed
+  conditions and returns the one to use plus client-tunable overrides (fingerprint,
+  fragment, port, SNI, dial IP). Server-bound fields (uuid, keys, flow) are never touched.
+- **Config adapters.** Parses **sing-box** and **Xray** configs into a neutral model
+  (auto-detected).
+- **Honest transport read.** Distinguishes "standard QUIC-to-CDN throttled" from "UDP is
+  dead" using a STUN cross-check — so a working custom-port Hysteria setup isn't wrongly
+  told to fall back to TCP.
+- **Opt-in donation pipeline.** A user-initiated "donate a test" flow (preview → confirm)
+  that uploads only an anonymized signal (no IPs, no identifiers) to a collector.
 
-### 📦 Installation (For Go Developers)
+### Install
 
 ```bash
 go get github.com/k0ssk0ss-ai/netprobe/pkg/engine
 ```
 
-### 🛠 Usage as an SDK (Embedding into VPN Clients)
+The core module pulls only `miekg/dns`, `quic-go` and `utls` — no GUI dependencies.
+
+### SDK usage
 
 ```go
-package main
-
 import (
-    "fmt"
+    "context"
+    "time"
+
     "github.com/k0ssk0ss-ai/netprobe/pkg/engine"
+    "github.com/k0ssk0ss-ai/netprobe/pkg/adapter"
 )
 
-func main() {
-    // 1. Get a dynamically verified clean IP
-    cleanIP := engine.GetCleanIP()
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
 
-    // 2. Run diagnostics
-    transportRes := engine.CheckTransport(cleanIP)
-    dpiRes := engine.CheckDPI(cleanIP, "twitter.com")
-    dnsRes := engine.CheckDNS("twitter.com")
+// 1. Diagnose a target.
+report := engine.RunEngineScans(ctx, "twitter.com")
+// report.Results.DPI.SNIBlocked, report.FingerprintMatrix, report.Recommendations ...
 
-    // 3. Make routing decisions based on network health
-    if transportRes.UDP443Works {
-        fmt.Println("QUIC is open! Switch to Hysteria2.")
-    } else if dpiRes.SNIBlocked {
-        fmt.Println("DPI detected! Switch to VLESS+Reality.")
-    } else {
-        fmt.Println("Clean network. WireGuard is safe to use.")
-    }
-}
+// 2. Decide which outbound to use (Vector A), from the user's sing-box/Xray config.
+candidates, _ := adapter.Parse(userConfigJSON)
+decision := engine.DecideOutboundActive(ctx, report, candidates)
+// decision.ChosenOutboundID, decision.Overrides.Fingerprint, decision.Reason
 ```
 
-### 💻 Standalone & CLI Mode (v2.5+)
-
-NetProbe can be run as a standalone executable. If you run it without arguments, it enters **Standalone Mode**, which sequentially scans a predefined list of popular blocked domains (youtube.com, instagram.com, etc.) and generates a comprehensive `netprobe_report.json` in the same directory. This is perfect for crowdsourcing network metrics from non-technical users.
+### CLI
 
 ```bash
-# Build the binary
-go build -o probe cmd/probe/main.go
+go build -o probe ./cmd/probe
 
-# 1. Standalone Mode (Double-click or run without flags)
-./probe
-# Output: Scans multiple domains and saves to netprobe_report.json
-
-# 2. Single Target CLI Mode
-./probe -target=twitter.com
-
-# 3. Start Daemon with Web UI on port 8080
-./probe -daemon -target=instagram.com
+./probe                                   # standalone: scans a domain list -> netprobe_report.json
+./probe -target=twitter.com               # single target -> JSON on stdout
+./probe -target=twitter.com -config=c.json -out=r.json   # + decision, clean JSON to file
 ```
 
-### 🤝 Contributing
-Pull requests with new fast, lightweight heuristics are welcome!
+> On PowerShell, quote flags whose values contain a dot: `.\probe.exe "-target=twitter.com"`.
 
+### Embedding into a client
+
+See [integration/](integration/) for the gomobile binding scripts and a worked
+Hiddify-style integration (donate button + decision engine), with the layers spelled out.
+
+### Limitations (read these)
+
+- Validated on one ISP; cross-provider tuning is pending.
+- App-level reachability is partial: e.g. Discord gateway/CDN are probed, but voice (UDP to
+  dynamic IPs) is not.
+- JA4 follows the FoxIO spec but is not yet cross-validated against reference vectors.
+- iOS binding requires macOS + Xcode + an Apple Developer account.
 
 ---
 
 <a name="русский"></a>
 ## 🇷🇺 Русский
 
-**NetProbe** — это легковесный, параллельный сетевой движок-сканер и SDK, написанный на Go. Он разработан специально для легкой компиляции в `.AAR` (Android) или `.framework` (iOS) через `gomobile` для встраивания в современные VPN-клиенты.
+NetProbe — небольшой Go-движок, который диагностирует, **как именно** сеть вмешивается в
+трафик, и — по конфигу клиента — выбирает аутбаунд, который реально проходит. Собирается в
+Android/iOS-биндинг через `gomobile` для встраивания в VPN-клиенты.
 
-NetProbe выступает как **умный QoS-движок (Quality of Service)** для мобильных VPN. Вместо банальной проверки доступности портов, он диагностирует деградацию сети (например, скрытый шейпинг UDP). Это позволяет вашему клиенту держать пользователей на легких, экономящих батарею и дающих низкий пинг протоколах (нативный WireGuard, Hysteria2) в чистых сетях, и переключать их на "тяжелые", расходующие батарею TCP-протоколы (VLESS/Trojan) *только* там, где реально работает DPI. И всё это менее чем за 3 секунды.
+Идея: клиенты обычно выбирают *сервер* по пингу, но не *протокол/транспорт/fingerprint* по
+методу цензуры. NetProbe меряет метод и на его основе принимает решение.
 
-### 🚀 Ключевые возможности
+### Что он делает на самом деле
 
-* **Готовность к Gomobile:** Построен исключительно на стандартной библиотеке Go (`net`, `crypto/tls`) и `miekg/dns`. Никаких тяжелых зависимостей.
-* **Строгая многопоточность:** Все сетевые проверки запускаются параллельно. Полное сканирование занимает ровно столько времени, сколько длится самый длинный таймаут (до 3 секунд).
-* **Умная DPI-эвристика:** Обнаруживает фильтрацию по TLS SNI и перехват незашифрованного HTTP Host.
-* **Специфичные проверки протоколов:** 
-  * Сравнивает доступность UDP 53 (DNS) и UDP 443 (QUIC), чтобы понять, выживут ли протоколы вроде **Hysteria2** или **TUIC**.
-  * Проверяет TCP 443 для отката на **VLESS/Trojan**, если провайдер "душит" UDP.
-* **Детект DNS Spoofing'а:** Сравнивает системный DNS с ответами от доверенных DoH (DNS over HTTPS) и валидирует TLS-сертификаты. Защищен от DNS-хиджакинга благодаря обращению к DoH через хардкодные IP-адреса.
-* **Динамический пул чистых IP:** Автоматически находит доступный доверенный IP (Cloudflare, Google, Yandex, Quad9) с помощью каналов, чтобы избежать ложных срабатываний, если какой-то из серверов попал под ковровые блокировки.
+- **Accurate-режим.** DPI, DNS и fingerprint-матрица бьют в **реальный IP** цели (резолв
+  через DoH, мимо DNS-хиджака), поэтому адресная блокировка (RST/blackhole на настоящем
+  хосте) ловится, а не выдаётся за «чисто».
+- **Survivability Matrix.** Шлёт несколько uTLS-fingerprint'ов (Chrome, Firefox, Safari,
+  iOS, Edge) и показывает, какие выживают — автоматизация ручного «переключай Chrome→
+  Firefox, пока не подключится». Считает JA3 и JA4 на каждый профиль.
+- **Движок решений (Vector A).** По аутбаундам пользователя ранжирует их под наблюдаемые
+  условия и выдаёт, какой использовать, плюс client-tunable оверрайды (fingerprint,
+  фрагментация, порт, SNI, dial IP). Серверные поля (uuid, ключи, flow) не трогает.
+- **Адаптеры конфигов.** Парсит **sing-box** и **Xray** в нейтральную модель (авто-детект).
+- **Честная оценка транспорта.** Отличает «стандартный QUIC-к-CDN зашейплен» от «UDP мёртв»
+  через STUN-сверку — рабочую Hysteria на кастомном порту не гонит зря на TCP.
+- **Opt-in донат.** Флоу «пожертвовать тест» (превью → подтверждение) грузит на коллектор
+  только обезличенный сигнал — без IP и идентификаторов.
 
-### 📦 Установка 
+### Установка
 
 ```bash
 go get github.com/k0ssk0ss-ai/netprobe/pkg/engine
 ```
 
-### 🛠 Использование как SDK
+Ядро тянет только `miekg/dns`, `quic-go`, `utls` — без GUI-зависимостей.
+
+### Использование как SDK
 
 ```go
-package main
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
 
-import (
-    "context"
-    "fmt"
-    "time"
-    "github.com/k0ssk0ss-ai/netprobe/pkg/engine"
-)
+report := engine.RunEngineScans(ctx, "twitter.com")
 
-func main() {
-    // 1. Создаем контекст с жестким таймаутом (защита для мобильных ОС)
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
-
-    // 2. Получаем живой "чистый" IP-адрес для тестов
-    cleanIP := engine.GetCleanIP(ctx)
-
-    // 3. Запускаем параллельную диагностику
-    transportRes := engine.CheckTransport(ctx, cleanIP)
-    dpiRes := engine.CheckDPI(ctx, cleanIP, "twitter.com")
-    dnsRes := engine.CheckDNS(ctx, "twitter.com")
-
-    // 4. Принимаем решение о выборе VPN-протокола с учетом QoS
-    if transportRes.UDP443Works && transportRes.UDPRTTMs < 100 {
-        fmt.Println("QUIC открыт, пинг отличный! Идеально для Hysteria2.")
-    } else if dpiRes.SNIBlocked || dpiRes.LikelyDPIInjected {
-        fmt.Println("Обнаружен активный DPI (Сброс по SNI)! Переключаемся на VLESS+Reality.")
-    } else if transportRes.TCPJitterMs > 50 {
-        fmt.Println("Канал нестабилен (высокий Jitter). Рекомендуем TCP (OpenVPN/VLESS).")
-    } else {
-        fmt.Println("Сеть чистая и стабильная. Можно использовать WireGuard.")
-    }
-}
+candidates, _ := adapter.Parse(userConfigJSON)   // sing-box или Xray
+decision := engine.DecideOutboundActive(ctx, report, candidates)
+// decision.ChosenOutboundID, decision.Overrides.Fingerprint, decision.Reason
 ```
 
-### 📱 Интеграция с Gomobile (Android / iOS)
-Для мобильных разработчиков точка входа вынесена в пакет `lib/mobile`. Функция `RunScan(target string) string` оптимизирована под жесткие таймауты ОС (3 секунды) и отдает чистую строку JSON для легкого парсинга в Swift / Kotlin/Java. Скомпилировать SDK невероятно просто: `gomobile bind -target=android ./lib/mobile`.
-
-### 💻 Режим Standalone & CLI (v2.5+)
-
-Вы можете запустить NetProbe как портативную утилиту. Если запустить бинарник без аргументов (двойным кликом), он перейдет в **Standalone Mode**: автоматически проверит список популярных заблокированных доменов (youtube.com, instagram.com и др.) и сохранит подробный отчет в файл `netprobe_report.json` в той же папке. Это идеально подходит для сбора данных о блокировках от обычных пользователей!
+### CLI
 
 ```bash
-# Сборка
-go build -o probe cmd/probe/main.go
-
-# 1. Standalone Режим (Без флагов / двойной клик)
-./probe
-# Итог: Проверяет список доменов и генерирует netprobe_report.json
-
-# 2. CLI Режим (Проверка одного домена с выводом в консоль)
-./probe -target=twitter.com
-
-# 3. Запуск Демона с веб-интерфейсом на порту 8080
-./probe -daemon -target=instagram.com
+go build -o probe ./cmd/probe
+./probe                         # скан списка доменов -> netprobe_report.json
+./probe -target=twitter.com     # один домен -> JSON в stdout
+./probe -target=twitter.com -config=c.json -out=r.json   # + решение, чистый JSON в файл
 ```
 
-### 🤝 Contributing
-Мы рады любым Pull Request'ам с новыми быстрыми эвристиками и идеями!
+> В PowerShell квотируй флаги с точкой в значении: `.\probe.exe "-target=twitter.com"`.
+
+### Встраивание в клиент
+
+См. [integration/](integration/) — скрипты gomobile-биндинга и разобранная интеграция в духе
+Hiddify (кнопка доната + движок решений), со всеми слоями.
+
+### Ограничения (важно)
+
+- Проверено на одном провайдере; настройка под другие — впереди.
+- Доступность приложений покрыта частично: у Discord пробиваются gateway/CDN, но не voice
+  (UDP на динамические IP).
+- JA4 сделан по спецификации FoxIO, но пока не сверен с референс-векторами.
+- iOS-биндинг требует macOS + Xcode + Apple Developer.
+
+### Contributing
+
+PR с быстрыми лёгкими эвристиками и адаптерами под новые клиенты приветствуются. Данные с
+реальных провайдеров (через донат) — самое ценное.

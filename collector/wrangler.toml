@@ -1,0 +1,15 @@
+name = "netprobe-collector"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Analytics Engine: cheap, PII-free, queryable store for the public censorship map.
+# Query later via the GraphQL Analytics API or the SQL API.
+[[analytics_engine_datasets]]
+binding = "NETPROBE_AE"
+dataset = "netprobe_donations"
+
+# Route the collector under your domain (behind Cloudflare). The client bootstraps to a
+# Cloudflare edge IP with this hostname as SNI, so DNS blocking of the domain is bypassed.
+# [[routes]]
+# pattern = "collector.example.com/ingest"
+# zone_name = "example.com"
