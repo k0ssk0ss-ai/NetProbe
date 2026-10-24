@@ -1,6 +1,6 @@
 # Binaries
 probe.exe
-probe
+/probe
 *.so
 *.aar
 *.xcframework
