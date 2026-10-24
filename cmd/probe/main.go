@@ -82,6 +82,9 @@ func runMassScan() {
 	fmt.Println("===================================================")
 	fmt.Println(" NetProbe v" + version + " - Анализатор блокировок (NTC Edition)")
 	fmt.Println("===================================================")
+	in := bufio.NewReader(os.Stdin)
+	code := supportCode(in)
+	loadConfig(code)
 	fmt.Println("Анализируем вашу сеть на наличие ТСПУ и DPI...")
 	fmt.Println()
 
@@ -156,8 +159,7 @@ func runMassScan() {
 		}
 	}
 
-	in := bufio.NewReader(os.Stdin)
-	offerUpload(in, summary, allReports, reach, savedPath)
+	offerUpload(in, code, summary, allReports, reach, savedPath)
 
 	fmt.Println("\nНажмите Enter для выхода...")
 	readLine(in)
