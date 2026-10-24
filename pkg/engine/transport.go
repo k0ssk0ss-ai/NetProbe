@@ -3,9 +3,9 @@ package engine
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"math"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -85,9 +85,12 @@ func CheckTransport(ctx context.Context, cleanIP string) TransportResult {
 		conn, err := quic.DialAddr(dialCtx, net.JoinHostPort(cleanIP, "443"), tlsConf, quicConf)
 		if err != nil {
 			errStr := err.Error()
-			if strings.Contains(errStr, "tls") ||
-				strings.Contains(errStr, "certificate") ||
-				strings.Contains(errStr, "handshake") {
+			// A TLS alert from the server proves the round trip; a handshake/idle
+			// timeout ("handshake did not complete in time") proves the opposite.
+			var te *quic.TransportError
+			var hto *quic.HandshakeTimeoutError
+			var ito *quic.IdleTimeoutError
+			if errors.As(err, &te) && !errors.As(err, &hto) && !errors.As(err, &ito) {
 				mu.Lock()
 				result.UDP443Works = true
 				mu.Unlock()

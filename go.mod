@@ -6,6 +6,7 @@ require (
 	github.com/miekg/dns v1.1.72
 	github.com/quic-go/quic-go v0.42.0
 	github.com/refraction-networking/utls v1.8.2
+	golang.org/x/crypto v0.46.0
 )
 
 require (
@@ -16,7 +17,6 @@ require (
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	go.uber.org/mock v0.4.0 // indirect
-	golang.org/x/crypto v0.46.0 // indirect
 	golang.org/x/exp v0.0.0-20221205204356-47842c84f3db // indirect
 	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect

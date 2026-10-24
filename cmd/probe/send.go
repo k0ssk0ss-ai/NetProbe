@@ -44,6 +44,7 @@ type supportPayload struct {
 	OS      string               `json:"os"`
 	Summary []string             `json:"summary"`
 	Reports []engine.ProbeReport `json:"reports"`
+	Reach   Reach                `json:"reach"`
 }
 
 func codeFromExe(path string) string {
@@ -55,7 +56,7 @@ func codeFromExe(path string) string {
 }
 
 // offerUpload asks once and sends. Any failure ends with a hint to send the file by hand.
-func offerUpload(in *bufio.Reader, summary []string, reports []engine.ProbeReport, savedPath string) {
+func offerUpload(in *bufio.Reader, summary []string, reports []engine.ProbeReport, reach Reach, savedPath string) {
 	if reportURL == "" {
 		return
 	}
@@ -72,7 +73,7 @@ func offerUpload(in *bufio.Reader, summary []string, reports []engine.ProbeRepor
 		return
 	}
 	p := supportPayload{Code: code, Version: version, OS: runtime.GOOS + "/" + runtime.GOARCH,
-		Summary: summary, Reports: reports}
+		Summary: summary, Reports: reports, Reach: reach}
 	if code == "" {
 		fmt.Print("Ваш ник в Telegram или имя (чтобы мы поняли, чей отчёт): ")
 		p.Name = readLine(in)

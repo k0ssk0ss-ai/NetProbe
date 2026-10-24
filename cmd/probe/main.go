@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -93,7 +94,8 @@ func runMassScan() {
 	}
 
 	var allReports []engine.ProbeReport
-	var summary []string
+	var sites []SiteVerdict
+	var details []string
 
 	for i, domain := range domains {
 		fmt.Printf("[%d/%d] Проверка %s... ", i+1, len(domains), domain)
@@ -115,22 +117,30 @@ func runMassScan() {
 		}
 
 		fmt.Printf("%s\n", blockReason)
-		summary = append(summary, domain+": "+blockReason)
+		sites = append(sites, SiteVerdict{domain, blockReason})
+		details = append(details, domain+": "+blockReason)
+	}
+	if len(allReports) > 0 {
+		details = append(details, "UDP 443 (QUIC к CDN): "+map[bool]string{true: "открыт", false: "закрыт"}[allReports[0].Results.Transport.UDP443Works])
 	}
 
-	fmt.Println("\n[!] Подводим итоги по транспорту:")
-	if len(allReports) > 0 {
-		if allReports[0].Results.Transport.UDP443Works {
-			fmt.Println(" [+] QUIC (UDP 443) статус: ОТКРЫТ (Идеально для Hysteria2/TUIC)")
-			summary = append(summary, "UDP 443: открыт")
-		} else {
-			fmt.Println(" [-] QUIC (UDP 443) статус: ЗАБЛОКИРОВАН (Используйте TCP/VLESS или нестандартные порты)")
-			summary = append(summary, "UDP 443: закрыт")
-		}
+	fmt.Println("\nПроверяем зарубежные хостинги и наш сервер (до 15 секунд)...")
+	reach := runReach()
+	for _, f := range append(reach.Hosting, derefFetch(reach.Server)...) {
+		details = append(details, fmt.Sprintf("%s: %d КБ за %.1f с %s", f.Name, f.Bytes/1000, f.Secs, f.Err))
 	}
+
+	verdict := Verdict(reach, sites)
+	fmt.Println("\n===================================================")
+	fmt.Println(" ИТОГ")
+	fmt.Println("===================================================")
+	for _, line := range verdict {
+		fmt.Println(" " + line)
+	}
+	summary := append(append(verdict, "— подробности —"), details...)
 
 	savedPath := ""
-	b, err := json.MarshalIndent(allReports, "", "  ")
+	b, err := json.MarshalIndent(supportPayload{Version: version, OS: runtime.GOOS + "/" + runtime.GOARCH, Summary: summary, Reports: allReports, Reach: reach}, "", "  ")
 	if err == nil {
 		cwd, errCwd := os.Getwd()
 		if errCwd == nil {
@@ -147,7 +157,7 @@ func runMassScan() {
 	}
 
 	in := bufio.NewReader(os.Stdin)
-	offerUpload(in, summary, allReports, savedPath)
+	offerUpload(in, summary, allReports, reach, savedPath)
 
 	fmt.Println("\nНажмите Enter для выхода...")
 	readLine(in)
